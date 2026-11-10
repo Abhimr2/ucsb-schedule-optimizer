@@ -97,7 +97,7 @@ function AppHeader({ onReset, apiHealth, apiContext }) {
         <span className="brand-mark" aria-hidden="true"><span /><span /><span /></span>
         <div>
           <p className="eyebrow">UCSB planning studio</p>
-          <h1>UCSB Scheduler Optimizer</h1>
+          <h1>UCSB Schedule Optimizer</h1>
         </div>
       </div>
       <div className="header-actions">

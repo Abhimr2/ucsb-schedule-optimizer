@@ -1,4 +1,4 @@
-# UCSB Scheduler Optimizer
+# UCSB Schedule Optimizer
 
 A Winter 2027 course scheduler that imports the UCSB Academic Curriculums
 catalog, builds valid lecture and secondary-section combinations, removes time
