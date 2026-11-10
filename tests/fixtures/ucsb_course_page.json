@@ -1,0 +1,116 @@
+{
+  "pageNumber": 1,
+  "pageSize": 1,
+  "total": 1,
+  "classes": [
+    {
+      "quarter": "20271",
+      "courseId": "CMPSC     16  ",
+      "title": "  PROBLEM SOLVING I  ",
+      "contactHours": 40.0,
+      "description": "  Foundations of computational problem solving.  ",
+      "college": "ENGR ",
+      "objLevelCode": "U ",
+      "subjectArea": "CMPSC   ",
+      "unitsFixed": 4.0,
+      "unitsVariableHigh": null,
+      "unitsVariableLow": null,
+      "gradingOption": "L ",
+      "instructionType": "LEC ",
+      "onLineCourse": false,
+      "deptCode": "CMPSC ",
+      "generalEducation": [
+        {
+          "geCode": "C  ",
+          "geCollege": "L&S "
+        }
+      ],
+      "classSections": [
+        {
+          "enrollCode": "08128",
+          "section": "0100",
+          "session": null,
+          "classClosed": false,
+          "courseCancelled": false,
+          "gradingOptionCode": "L ",
+          "enrolledTotal": 60,
+          "maxEnroll": 75,
+          "secondaryStatus": "R ",
+          "departmentApprovalRequired": false,
+          "instructorApprovalRequired": false,
+          "restrictionLevel": "U ",
+          "restrictionMajor": null,
+          "restrictionMajorPass": null,
+          "restrictionMinor": null,
+          "restrictionMinorPass": null,
+          "concurrentCourses": [
+            {
+              "courseId": "MATH       3A "
+            },
+            "ENGR 3  "
+          ],
+          "typeInstruction": "LEC ",
+          "timeLocations": [
+            {
+              "room": "1203 ",
+              "building": "ILP ",
+              "roomCapacity": 80,
+              "days": "M W    ",
+              "beginTime": "09:30",
+              "endTime": "10:45"
+            },
+            {
+              "room": null,
+              "building": "ONLINE ",
+              "roomCapacity": null,
+              "days": "TBA    ",
+              "beginTime": "TBA",
+              "endTime": null
+            }
+          ],
+          "instructors": [
+            {
+              "instructor": "MAJEDI M ",
+              "functionCode": "Teaching and in charge "
+            },
+            {
+              "instructor": "DOE A ",
+              "functionCode": "Teaching "
+            }
+          ]
+        },
+        {
+          "enrollCode": "08144",
+          "section": "0101",
+          "session": "1 ",
+          "classClosed": null,
+          "courseCancelled": null,
+          "gradingOptionCode": null,
+          "enrolledTotal": 20,
+          "maxEnroll": 30,
+          "secondaryStatus": null,
+          "departmentApprovalRequired": false,
+          "instructorApprovalRequired": true,
+          "restrictionLevel": null,
+          "restrictionMajor": "CMPSC ",
+          "restrictionMajorPass": "1 ",
+          "restrictionMinor": null,
+          "restrictionMinorPass": null,
+          "concurrentCourses": [],
+          "typeInstruction": "DIS",
+          "timeLocations": [
+            {
+              "room": "3525 ",
+              "building": "PHELP ",
+              "roomCapacity": 30,
+              "days": " R     ",
+              "beginTime": null,
+              "endTime": null
+            }
+          ],
+          "instructors": []
+        }
+      ]
+    }
+  ]
+}

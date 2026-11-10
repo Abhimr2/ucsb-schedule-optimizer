@@ -8,7 +8,6 @@ class Course:
     
     def descript(self):
         print(self.t + " (" + self.c + ") " + "has a lecture from " + self.s + " to " + self.e + " on " + self.d)
-        # Ex. MATH 4A (30189) has a lecture from 1:00 PM to 1:50 PM on Monday, Wednesday, and Friday.
 
 math4A = Course('MATH 4A - LIN ALG W/APPS', '30189', 'Monday, Wednesday, and Friday', '1:00 PM', '1:50 PM')
 cmpsc16 = Course('CMPSC 16 - PROBLEM SOLVING I', '08128', 'Monday and Wednesday', '3:30 PM', '4:45 PM')

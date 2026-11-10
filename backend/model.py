@@ -1,262 +1,623 @@
-from itertools import product
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from math import isfinite
+from numbers import Real
+
+
+WEEKDAYS = ("M", "T", "W", "R", "F")
+DEFAULT_COMBINATION_LIMIT = 1_000_000
+
+
+@dataclass(frozen=True)
+class Block:
+    days: tuple[str, ...]
+    start_time: int | None
+    end_time: int | None
+    meeting_type: str
+    building: str | None = None
+    room: str | None = None
+    is_tba: bool = False
+
+    def __post_init__(self):
+        normalized_days = []
+        for raw_day in self.days:
+            if not isinstance(raw_day, str) or not raw_day.strip():
+                raise ValueError("days must contain non-empty strings")
+            day = raw_day.strip().upper()
+            if day not in normalized_days:
+                normalized_days.append(day)
+
+        object.__setattr__(self, "days", tuple(normalized_days))
+        _validate_optional_minute(self.start_time, "start_time")
+        _validate_optional_minute(self.end_time, "end_time", allow_day_end=True)
+
+        if (
+            self.start_time is not None
+            and self.end_time is not None
+            and self.start_time >= self.end_time
+        ):
+            raise ValueError("start_time must be earlier than end_time")
+
+        if not isinstance(self.meeting_type, str) or not self.meeting_type.strip():
+            raise ValueError("meeting_type must be a non-empty string")
+
+        if not isinstance(self.is_tba, bool):
+            raise TypeError("is_tba must be a boolean")
+
+    @property
+    def is_timed(self):
+        return (
+            not self.is_tba
+            and bool(self.days)
+            and self.start_time is not None
+            and self.end_time is not None
+        )
+
+    @property
+    def startTime(self):
+        return self.start_time
+
+    @property
+    def endTime(self):
+        return self.end_time
+
+    @property
+    def type(self):
+        return self.meeting_type
+
+
+@dataclass(frozen=True)
+class Section:
+    enroll_code: str
+    section_number: str
+    instruction_type: str
+    blocks: tuple[Block, ...] = field(default_factory=tuple)
+    session: str | None = None
+    secondary_status: str | None = None
+    instructors: tuple = field(default_factory=tuple)
+    closed: bool = False
+    cancelled: bool = False
+    enrolled_total: int | None = None
+    max_enroll: int | None = None
+
+    def __post_init__(self):
+        for field_name in ("enroll_code", "section_number", "instruction_type"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field_name} must be a non-empty string")
+
+        blocks = tuple(self.blocks)
+        if any(not isinstance(block, Block) for block in blocks):
+            raise TypeError("blocks must contain only Block objects")
+
+        object.__setattr__(self, "blocks", blocks)
+        object.__setattr__(self, "instructors", tuple(self.instructors))
+
+        if not isinstance(self.closed, bool) or not isinstance(self.cancelled, bool):
+            raise TypeError("closed and cancelled must be booleans")
+
+        _validate_optional_nonnegative_integer(
+            self.enrolled_total,
+            "enrolled_total",
+        )
+        _validate_optional_nonnegative_integer(self.max_enroll, "max_enroll")
+
+    @property
+    def timed_blocks(self):
+        return tuple(block for block in self.blocks if block.is_timed)
+
+    @property
+    def has_tba(self):
+        return any(block.is_tba for block in self.blocks)
+
+    @property
+    def is_incomplete(self):
+        return not self.blocks or any(not block.is_timed for block in self.blocks)
+
+    @property
+    def available_seats(self):
+        if self.enrolled_total is None or self.max_enroll is None:
+            return None
+        return max(self.max_enroll - self.enrolled_total, 0)
+
+    @property
+    def availability(self):
+        if self.cancelled:
+            return "cancelled"
+        if self.closed:
+            return "closed"
+
+        available_seats = self.available_seats
+        if available_seats is None:
+            return "unknown"
+        if available_seats == 0:
+            return "full"
+        return "open"
+
+    @property
+    def is_available(self):
+        return self.availability in {"open", "unknown"}
+
+
+@dataclass(frozen=True)
+class CourseOption:
+    sections: tuple[Section, ...]
+
+    def __post_init__(self):
+        sections = tuple(self.sections)
+        if not sections:
+            raise ValueError("a course option must contain at least one section")
+        if any(not isinstance(section, Section) for section in sections):
+            raise TypeError("sections must contain only Section objects")
+        if len({section.enroll_code for section in sections}) != len(sections):
+            raise ValueError("a course option cannot repeat an enroll code")
+
+        object.__setattr__(self, "sections", sections)
+
+    @property
+    def blocks(self):
+        return tuple(
+            block
+            for section in self.sections
+            for block in section.blocks
+        )
+
+    @property
+    def enroll_codes(self):
+        return tuple(section.enroll_code for section in self.sections)
+
+    @property
+    def key(self):
+        return self.enroll_codes
+
+    @property
+    def is_incomplete(self):
+        return any(section.is_incomplete for section in self.sections)
+
+    @property
+    def has_tba(self):
+        return any(section.has_tba for section in self.sections)
+
+    @property
+    def has_internal_conflict(self):
+        blocks = self.blocks
+        for index, block_a in enumerate(blocks):
+            for block_b in blocks[index + 1 :]:
+                if time_conflicts(block_a, block_b):
+                    return True
+        return False
+
+    def __iter__(self):
+        return iter(self.blocks)
+
+    def __len__(self):
+        return len(self.blocks)
+
+
+@dataclass(frozen=True)
+class Course:
+    name: str
+    code: str
+    options: tuple[CourseOption, ...]
+    units: float | None = None
+    description: str | None = None
+
+    def __post_init__(self):
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise ValueError("name must be a non-empty string")
+        if not isinstance(self.code, str) or not self.code.strip():
+            raise ValueError("code must be a non-empty string")
+
+        options = tuple(self.options)
+        if any(not isinstance(option, CourseOption) for option in options):
+            raise TypeError("options must contain only CourseOption objects")
+        object.__setattr__(self, "options", options)
+
+    def create_options(self):
+        return self.options
+
+
+class CombinationLimitExceeded(ValueError):
+    def __init__(self, raw_count, combination_limit):
+        self.raw_count = raw_count
+        self.combination_limit = combination_limit
+        super().__init__(
+            f"raw schedule count {raw_count} exceeds combination limit "
+            f"{combination_limit}"
+        )
+
 
 class Scheduler:
     def __init__(self, courses):
-        self.courses = courses
-    
-    def generate_schedules(self):
-        allOptions = []
-        
-        for course in self.courses:
-            allOptions.append(course.create_options())
-        
-        allSchedules = []
-        allSchedules = list(product(*allOptions))
+        self.courses = tuple(courses)
+        if any(not isinstance(course, Course) for course in self.courses):
+            raise TypeError("courses must contain only Course objects")
+        self.last_generation_stats = None
 
-        expected = 2 * 2 * 1 * 1
-        actual = len(allSchedules)
+    def generate_schedules(
+        self,
+        limit=None,
+        combination_limit=DEFAULT_COMBINATION_LIMIT,
+    ):
+        limit = _validate_result_limit(limit)
+        raw_count = self._checked_raw_count(combination_limit)
+        returned = []
+        valid_count = 0
 
-        validSchedules = []
+        for schedule in self._iter_valid_schedules():
+            valid_count += 1
+            if limit is None or len(returned) < limit:
+                returned.append(schedule)
 
-        for schedule in allSchedules:
-            val = self.schedule_is_valid(schedule)
+        self.last_generation_stats = {
+            "raw_count": raw_count,
+            "valid_count": valid_count,
+            "returned_count": len(returned),
+        }
+        return returned
 
-            if val == True:
-                validSchedules.append(schedule)
-        
-        correct = len(validSchedules)
+    def rank_schedules(
+        self,
+        preferences,
+        limit=3,
+        combination_limit=DEFAULT_COMBINATION_LIMIT,
+    ):
+        limit = _validate_rank_limit(limit)
+        raw_count = self._checked_raw_count(combination_limit)
+        ranked = []
+        valid_count = 0
 
-        print("Expected raw schedules:", expected)
-        print("Actual raw schedules:", actual)
-        print("Valid schedules:", correct)
-    
+        for schedule in self._iter_valid_schedules():
+            valid_count += 1
+            if limit == 0:
+                continue
+
+            ranked.append(
+                (
+                    self.score_schedule(schedule, preferences),
+                    _schedule_key(schedule),
+                    schedule,
+                )
+            )
+            ranked.sort(key=lambda item: (-item[0], item[1]))
+            if len(ranked) > limit:
+                ranked.pop()
+
+        schedules = [item[2] for item in ranked]
+        self.last_generation_stats = {
+            "raw_count": raw_count,
+            "valid_count": valid_count,
+            "returned_count": len(schedules),
+        }
+        return schedules
+
     def schedule_is_valid(self, schedule):
-        for i in range(len(schedule)):
-            for j in range(i + 1, len(schedule)):
-                if option_conflicts(schedule[i], schedule[j]):
+        schedule = tuple(schedule)
+        if any(option.has_internal_conflict for option in schedule):
+            return False
+
+        for index, option_a in enumerate(schedule):
+            for option_b in schedule[index + 1 :]:
+                if option_conflicts(option_a, option_b):
                     return False
-
         return True
-    
+
+    def get_all_schedule_blocks(self, schedule):
+        return tuple(
+            block
+            for course_option in schedule
+            for block in course_option.blocks
+        )
+
     def get_allScheduleBlocks(self, schedule):
-        allBlocks = []
-        
-        for course_option in schedule:
-            for block in course_option:
-                allBlocks.append(block)
-        
-        return allBlocks
-    
+        return self.get_all_schedule_blocks(schedule)
+
     def sort_by_days(self, schedule):
-        days = [[], [], [], [], []]
-        daysOfTheWeek = ["M", "T", "W", "R", "F"]
+        blocks_by_day = {day: [] for day in WEEKDAYS}
 
-        allBlocks = self.get_allScheduleBlocks(schedule)
+        for block in self.get_all_schedule_blocks(schedule):
+            if not block.is_timed:
+                continue
+            for day in block.days:
+                if day in blocks_by_day:
+                    blocks_by_day[day].append(block)
 
-        for i in range(len(daysOfTheWeek)):
-            day = daysOfTheWeek[i]
+        for blocks in blocks_by_day.values():
+            blocks.sort(key=lambda block: (block.start_time, block.end_time))
 
-            for block in allBlocks:
-                if day in block.days:
-                    days[i].append(block)
+        return tuple(tuple(blocks_by_day[day]) for day in WEEKDAYS)
 
-        for day_blocks in days:
-            day_blocks.sort(key=lambda item: (item.startTime, item.endTime))
+    def score_days(self, schedule, preferred_days):
+        preferred_days = set(preferred_days)
+        successful_occurrences = 0
+        total_occurrences = 0
 
-        return days
-    
-    def score_days(self, schedule, preferredDays):
-        day_score = 0
-        total_score = 0
+        for block in self.get_all_schedule_blocks(schedule):
+            if not block.is_timed:
+                continue
+            total_occurrences += len(block.days)
+            successful_occurrences += sum(
+                day in preferred_days for day in block.days
+            )
 
-        for course_option in schedule:
-            for block in course_option:
-                total_score += len(block.days)
+        if total_occurrences == 0:
+            return 1.0
+        return successful_occurrences / total_occurrences
 
-                for preferred_day in preferredDays:
-                    if preferred_day in block.days:
-                        day_score += 1
+    def score_time_range(self, schedule, preferred_start, preferred_end):
+        _validate_preferred_time_range(preferred_start, preferred_end)
+        successful_occurrences = 0
+        total_occurrences = 0
 
-        return day_score / total_score
-    
+        for block in self.get_all_schedule_blocks(schedule):
+            if not block.is_timed:
+                continue
+            total_occurrences += len(block.days)
+            if (
+                block.start_time >= preferred_start
+                and block.end_time <= preferred_end
+            ):
+                successful_occurrences += len(block.days)
+
+        if total_occurrences == 0:
+            return 1.0
+        return successful_occurrences / total_occurrences
+
     def score_timeRange(self, schedule, preferredStart, preferredEnd):
-        time_score = 0
-        total_score = 0
+        return self.score_time_range(schedule, preferredStart, preferredEnd)
 
-        for course_option in schedule:
-            for block in course_option:
-                total_score += len(block.days)
-
-                if block.startTime >= preferredStart and block.endTime <= preferredEnd:
-                    time_score += len(block.days)
-        
-        return time_score / total_score
-    
-    def score_gap(self, schedule, preferredGap):
-        sortedSched = self.sort_by_days(schedule)
-
+    def score_gap(self, schedule, minimum_gap):
+        _validate_nonnegative_number(minimum_gap, "minimum_gap")
         successful_gaps = 0
         total_gaps = 0
 
-        for sorted_dayBlocks in sortedSched:
-            for i in range(len(sorted_dayBlocks) - 1):
-                current_block = sorted_dayBlocks[i]
-                next_block = sorted_dayBlocks[i + 1]
-
-                gap = next_block.startTime - current_block.endTime
+        for day_blocks in self.sort_by_days(schedule):
+            for index in range(len(day_blocks) - 1):
+                current_block = day_blocks[index]
+                next_block = day_blocks[index + 1]
+                gap = next_block.start_time - current_block.end_time
                 total_gaps += 1
 
-                if gap <= preferredGap:
+                if gap >= minimum_gap:
                     successful_gaps += 1
 
         if total_gaps == 0:
             return 1.0
-
         return successful_gaps / total_gaps
-    
-    def score_schedule(self, schedule, preferences):        
-        gapScore = self.score_gap(schedule, preferences["preferredGap"])
-        timeScore = self.score_timeRange(schedule, preferences["preferredStart"], preferences["preferredEnd"])
-        dayScore = self.score_days(schedule, preferences["preferredDays"])
 
-        dayScore *= preferences["dayWeight"]
-        timeScore *= preferences["timeWeight"]
-        gapScore *= preferences["gapWeight"]
-
-        totalWeight = preferences["dayWeight"] + preferences["timeWeight"] + preferences["gapWeight"]
-
-        weightedScore = dayScore + timeScore + gapScore
-
-        return weightedScore / totalWeight * 100
-
-class Course:
-    def __init__(self, name, code, lectures, sections):
-        self.name = name
-        self.code = code
-        self.lectures = lectures
-        self.sections = sections
-    
-    def create_options(self):
-        options = []
-
-        if len(self.lectures) == 0 and len(self.sections) == 0:
-            return options
-
-        if len(self.sections) == 0:
-            for lecture in self.lectures:
-                options.append([lecture])
-
-            return options
-
-        if len(self.lectures) == 0:
-            for section in self.sections:
-                options.append([section])
-
-            return options
-
-        for lecture in self.lectures:
-            for section in self.sections:
-                options.append([lecture, section])
-
-        return options
-
-
-    def print_course(self):
-        all_blocks = self.lectures + self.sections
-
-        day_names = {
-            "M": "Monday",
-            "T": "Tuesday",
-            "W": "Wednesday",
-            "R": "Thursday",
-            "F": "Friday",
+    def score_schedule(self, schedule, preferences):
+        preferred_days = _preference_value(
+            preferences,
+            "preferred_days",
+            "preferredDays",
+            "days",
+        )
+        preferred_start = _preference_value(
+            preferences,
+            "preferred_start",
+            "preferredStart",
+            "start",
+        )
+        preferred_end = _preference_value(
+            preferences,
+            "preferred_end",
+            "preferredEnd",
+            "end",
+        )
+        minimum_gap = _preference_value(
+            preferences,
+            "minimum_gap",
+            "minimumGap",
+            "preferred_gap",
+            "preferredGap",
+            "gap",
+        )
+        weights = {
+            "days": _preference_weight(preferences, "day"),
+            "time": _preference_weight(preferences, "time"),
+            "gap": _preference_weight(preferences, "gap"),
         }
 
-        for block in all_blocks:
-            for day in block.days:
-                displayed_day = day_names.get(day, day)
+        total_weight = sum(weights.values())
+        if total_weight == 0:
+            raise ValueError("preference weights must have a positive total")
 
-                print(
-                    self.name
-                    + " ("
-                    + self.code
-                    + ") has a "
-                    + block.type
-                    + " from "
-                    + str(block.startTime)
-                    + " to "
-                    + str(block.endTime)
-                    + " on "
-                    + displayed_day
-                )
+        weighted_score = (
+            self.score_days(schedule, preferred_days) * weights["days"]
+            + self.score_time_range(
+                schedule,
+                preferred_start,
+                preferred_end,
+            )
+            * weights["time"]
+            + self.score_gap(schedule, minimum_gap) * weights["gap"]
+        )
+        return weighted_score / total_weight * 100
 
-class Block:
-    def __init__(self, days, startTime, endTime, type):
-        self.days = days
-        self.startTime = startTime
-        self.endTime = endTime
-        self.type = type
-    
-    def convert_days(self):
-       for i in range(len(self.days)):
-        
-        if self.days[i] == 'M':
-            self.days[i] = 'Monday'
-        elif self.days[i] == 'T':
-            self.days[i] = 'Tuesday'
-        elif self.days[i] == 'W':
-            self.days[i] = 'Wednesday'
-        elif self.days[i] == 'R':
-            self.days[i] = 'Thursday'
-        elif self.days[i] == 'F':
-            self.days[i] = 'Friday'
-    
-    def convert_time(self, time):
-        time_parts = time.split()
-        hour_minute = time_parts[0]
-        am_pm = time_parts[1]
+    def _checked_raw_count(self, combination_limit):
+        combination_limit = _validate_combination_limit(combination_limit)
+        raw_count = 1
+        for course in self.courses:
+            raw_count *= len(course.options)
 
-        hour, minute = hour_minute.split(":")
-        hour = int(hour)
-        minute = int(minute)
+        if raw_count > combination_limit:
+            raise CombinationLimitExceeded(raw_count, combination_limit)
+        return raw_count
 
-        if am_pm == "PM" and hour != 12:
-            hour += 12
+    def _iter_valid_schedules(self):
+        ordered_courses = sorted(
+            enumerate(self.courses),
+            key=lambda item: (len(item[1].options), item[0]),
+        )
+        selected_by_original_index = [None] * len(self.courses)
+        selected_options = []
 
-        if am_pm == "AM" and hour == 12:
-            hour = 0
+        def backtrack(ordered_index):
+            if ordered_index == len(ordered_courses):
+                yield tuple(selected_by_original_index)
+                return
 
-        return hour * 60 + minute
-    
-    def time_to_minutes(self):
-        self.startTime = self.convert_time(self.startTime)
-        self.endTime = self.convert_time(self.endTime)
+            original_index, course = ordered_courses[ordered_index]
+            for option in course.options:
+                if option.has_internal_conflict:
+                    continue
+                if any(
+                    option_conflicts(option, selected)
+                    for selected in selected_options
+                ):
+                    continue
+
+                selected_by_original_index[original_index] = option
+                selected_options.append(option)
+                yield from backtrack(ordered_index + 1)
+                selected_options.pop()
+                selected_by_original_index[original_index] = None
+
+        yield from backtrack(0)
+
 
 def time_conflicts(meeting_a, meeting_b):
-    if len(meeting_a.days) == 0 or len(meeting_b.days) == 0:
+    if not isinstance(meeting_a, Block) or not isinstance(meeting_b, Block):
+        raise TypeError("time_conflicts expects two Block objects")
+    if not meeting_a.is_timed or not meeting_b.is_timed:
+        return False
+    if not set(meeting_a.days).intersection(meeting_b.days):
         return False
 
-    if meeting_a.startTime is None or meeting_a.endTime is None:
-        return False
+    return (
+        meeting_a.start_time < meeting_b.end_time
+        and meeting_b.start_time < meeting_a.end_time
+    )
 
-    if meeting_b.startTime is None or meeting_b.endTime is None:
-        return False
-
-    shared_day = False
-
-    for day in meeting_a.days:
-        if day in meeting_b.days:
-            shared_day = True
-
-    if shared_day == False:
-        return False
-
-    return meeting_a.startTime < meeting_b.endTime and meeting_b.startTime < meeting_a.endTime
 
 def option_conflicts(option_a, option_b):
-    for block_a in option_a:
-        for block_b in option_b:
-            if time_conflicts(block_a, block_b):
-                return True
+    blocks_a = _blocks_from(option_a)
+    blocks_b = _blocks_from(option_b)
 
-    return False
+    return any(
+        time_conflicts(block_a, block_b)
+        for block_a in blocks_a
+        for block_b in blocks_b
+    )
+
+
+def _blocks_from(value):
+    if isinstance(value, Block):
+        return (value,)
+    if isinstance(value, Section):
+        return value.blocks
+    if isinstance(value, CourseOption):
+        return value.blocks
+
+    try:
+        blocks = tuple(value)
+    except TypeError as error:
+        raise TypeError(
+            "an option must be a CourseOption, Section, Block, or iterable of Blocks"
+        ) from error
+
+    if any(not isinstance(block, Block) for block in blocks):
+        raise TypeError("an option iterable must contain only Block objects")
+    return blocks
+
+
+def _schedule_key(schedule):
+    return tuple(option.key for option in schedule)
+
+
+def _validate_optional_minute(value, field_name, allow_day_end=False):
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{field_name} must be an integer or None")
+
+    maximum = 1440 if allow_day_end else 1439
+    if not 0 <= value <= maximum:
+        raise ValueError(f"{field_name} must be between 0 and {maximum}")
+
+
+def _validate_optional_nonnegative_integer(value, field_name):
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{field_name} must be a non-negative integer or None")
+    if value < 0:
+        raise ValueError(f"{field_name} must be non-negative")
+
+
+def _validate_result_limit(limit):
+    if limit is None:
+        return None
+    return _validate_nonnegative_integer(limit, "limit")
+
+
+def _validate_rank_limit(limit):
+    return _validate_nonnegative_integer(limit, "limit")
+
+
+def _validate_combination_limit(combination_limit):
+    return _validate_nonnegative_integer(
+        combination_limit,
+        "combination_limit",
+    )
+
+
+def _validate_nonnegative_integer(value, field_name):
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{field_name} must be a non-negative integer")
+    if value < 0:
+        raise ValueError(f"{field_name} must be non-negative")
+    return value
+
+
+def _validate_nonnegative_number(value, field_name):
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise TypeError(f"{field_name} must be a non-negative number")
+    if not isfinite(value) or value < 0:
+        raise ValueError(f"{field_name} must be a finite non-negative number")
+    return float(value)
+
+
+def _validate_preferred_time_range(preferred_start, preferred_end):
+    _validate_optional_minute(preferred_start, "preferred_start")
+    _validate_optional_minute(
+        preferred_end,
+        "preferred_end",
+        allow_day_end=True,
+    )
+    if preferred_start is None or preferred_end is None:
+        raise ValueError("preferred_start and preferred_end are required")
+    if preferred_start > preferred_end:
+        raise ValueError("preferred_start cannot be later than preferred_end")
+
+
+def _preference_value(preferences, *names):
+    if not isinstance(preferences, dict):
+        raise TypeError("preferences must be a dictionary")
+    for name in names:
+        if name in preferences:
+            return preferences[name]
+    raise KeyError(names[0])
+
+
+def _preference_weight(preferences, kind):
+    weight_names = {
+        "day": ("day_weight", "dayWeight"),
+        "time": ("time_weight", "timeWeight"),
+        "gap": ("gap_weight", "gapWeight"),
+    }
+
+    for name in weight_names[kind]:
+        if name in preferences:
+            return _validate_nonnegative_number(preferences[name], name)
+
+    nested_weights = preferences.get("weights")
+    nested_name = {"day": "days", "time": "time", "gap": "gap"}[kind]
+    if isinstance(nested_weights, dict) and nested_name in nested_weights:
+        return _validate_nonnegative_number(
+            nested_weights[nested_name],
+            f"weights.{nested_name}",
+        )
+
+    raise KeyError(weight_names[kind][0])
